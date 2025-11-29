@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pengingat Tugas (Offline)</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial}
+    body{max-width:900px;margin:20px auto;padding:18px;border:1px solid #eee;border-radius:8px}
+    h1{margin:0 0 12px;font-size:20px}
+    label{display:block;margin:8px 0 4px;font-weight:600}
+    input,button,textarea,select{padding:8px;border-radius:6px;border:1px solid #ccc;width:100%;box-sizing:border-box}
+    .row{display:flex;gap:8px}
+    .row > *{flex:1}
+    .task{padding:10px;border-radius:8px;border:1px solid #ddd;margin-top:8px;display:flex;justify-content:space-between;align-items:center}
+    .meta{font-size:12px;color:#555}
+    .controls{display:flex;gap:6px}
+    .small{width:auto;padding:6px 8px}
+    footer{margin-top:14px;font-size:12px;color:#666}
+    .danger{background:#ffdddd;border-color:#ff9b9b}
+  </style>
+</head>
+<body>
+  <h1>Pengingat Tugas — File HTML</h1>
+
+  <p>Gunakan form di bawah untuk menambahkan pengingat. Untuk bunyikan alarm di HP, tekan tombol <strong>Aktifkan Audio/Notifikasi</strong> sekali agar browser memberi izin audio/notification. (Hal ini diperlukan karena pembatasan autoplay pada browser.)</p>
+
+  <button id="enableBtn" class="small">Aktifkan Audio & Notifikasi</button>
+
+  <hr />
+
+  <label for="title">Judul tugas</label>
+  <input id="title" placeholder="Contoh: Kirim laporan" />
+
+  <label for="datetime">Pilih tanggal & waktu</label>
+  <input id="datetime" type="datetime-local" />
+
+  <label for="note">Catatan (opsional)</label>
+  <textarea id="note" rows="2" placeholder="Catatan tambahan..."></textarea>
+
+  <div style="margin-top:8px" class="row">
+    <button id="addBtn">Tambah Pengingat</button>
+    <button id="clearBtn" class="small danger">Hapus Semua</button>
+  </div>
+
+  <h2 style="margin-top:14px">Daftar Pengingat</h2>
+  <div id="list"></div>
+
+  <div style="margin-top:12px">
+    <button id="stopAlarmBtn" class="small">Berhentikan Alarm</button>
+  </div>
+
+  <footer>
+    Catatan: Aplikasi ini bekerja saat halaman terbuka di browser. Beberapa browser/OS (termasuk iOS Safari) membatasi notifikasi dan suara saat tab tidak aktif atau layar mati. Untuk alarm yang benar-benar berjalan di latar belakang, pertimbangkan membuat PWA atau aplikasi native.
+  </footer>
+
+  <script>
+    // Storage key
+    const STORAGE_KEY = 'pengingat_tugas_v1';
+
+    // State
+    let tasks = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    let audioCtx = null;
+    let alarmOsc = null;
+    let alarmInterval = null;
+    let alarmPlaying = false;
+
+    const listEl = document.getElementById('list');
+    const titleEl = document.getElementById('title');
+    const dateEl = document.getElementById('datetime');
+    const noteEl = document.getElementById('note');
+    const addBtn = document.getElementById('addBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const enableBtn = document.getElementById('enableBtn');
+    const stopAlarmBtn = document.getElementById('stopAlarmBtn');
+
+    function save() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+    }
+
+    function render() {
+      listEl.innerHTML = '';
+      if (tasks.length === 0) listEl.innerHTML = '<p>Tidak ada pengingat.</p>';
+      tasks.sort((a,b)=>a.time - b.time);
+      tasks.forEach(t => {
+        const el = document.createElement('div');
+        el.className = 'task';
+        const left = document.createElement('div');
+        const title = document.createElement('div'); title.textContent = t.title;
+        const meta = document.createElement('div'); meta.className = 'meta';
+        const dt = new Date(t.time);
+        meta.textContent = dt.toLocaleString() + (t.note ? ' — ' + t.note : '');
+        left.appendChild(title); left.appendChild(meta);
+        const right = document.createElement('div'); right.className = 'controls';
+        const del = document.createElement('button'); del.textContent = 'Hapus'; del.className='small';
+        del.onclick = ()=>{ tasks = tasks.filter(x=>x.id!==t.id); save(); render(); }
+        const snooze = document.createElement('button'); snooze.textContent='Tunda 5m'; snooze.className='small';
+        snooze.onclick = ()=>{
+          t.time = Date.now() + 5*60*1000; t.triggered = false; save(); render();
+        }
+        right.appendChild(snooze); right.appendChild(del);
+        el.appendChild(left); el.appendChild(right);
+        listEl.appendChild(el);
+      })
+    }
+
+    function addTask() {
+      const title = titleEl.value.trim();
+      const dtVal = dateEl.value;
+      if (!title) { alert('Isi judul tugas.'); return; }
+      if (!dtVal) { alert('Pilih tanggal & waktu.'); return; }
+      const time = new Date(dtVal).getTime();
+      if (isNaN(time)) { alert('Tanggal tidak valid.'); return; }
+      tasks.push({id: Date.now().toString(36), title, time, note: noteEl.value.trim(), triggered:false});
+      save(); render();
+      titleEl.value=''; dateEl.value=''; noteEl.value='';
+    }
+
+    addBtn.addEventListener('click', addTask);
+    clearBtn.addEventListener('click', ()=>{ if(confirm('Hapus semua pengingat?')){ tasks=[]; save(); render(); } });
+
+    // Enable audio context and request Notification permission
+    enableBtn.addEventListener('click', async ()=>{
+      try {
+        // AudioContext must be created/resumed after user gesture
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await audioCtx.resume();
+        console.log('AudioContext siap');
+      } catch(e){ console.warn('Gagal inisialisasi AudioContext', e); }
+
+      if ('Notification' in window) {
+        if (Notification.permission === 'default') {
+          Notification.requestPermission().then(p=>console.log('Notification permission:',p));
+        }
+      }
+
+      if (navigator && navigator.vibrate) {
+        console.log('Vibrate API available');
+      }
+
+      enableBtn.textContent = 'Audio & Notifikasi Aktif (klik sekali lagi untuk re-enable)';
+    });
+
+    function startAlarmVisual(task){
+      // show notification
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try { new Notification('Pengingat: ' + task.title, { body: task.note || '', tag: task.id }); } catch(e){ console.warn(e); }
+      }
+      // vibrate
+      if (navigator.vibrate) navigator.vibrate([500,200,500,200]);
+      // play sound with oscillator
+      if (audioCtx) {
+        if (alarmPlaying) return;
+        alarmOsc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        alarmOsc.type = 'sine';
+        alarmOsc.frequency.value = 880; // A5
+        gain.gain.value = 0.001; // start tiny to avoid pop
+        alarmOsc.connect(gain);
+        gain.connect(audioCtx.destination);
+        alarmOsc.start();
+        // ramp volume
+        gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.2);
+        alarmPlaying = true;
+        // modulate frequency for alert effect
+        alarmInterval = setInterval(()=>{
+          if (!alarmOsc) return;
+          alarmOsc.frequency.setValueAtTime(600 + Math.random()*800, audioCtx.currentTime);
+        }, 400);
+      } else {
+        // fallback: play beep via HTMLAudio (may be blocked without user gesture)
+        const a = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA='); // tiny silent wav fallback
+        a.play().catch(()=>console.log('Audio play blocked'));
+      }
+    }
+
+    function stopAlarm() {
+      if (alarmInterval) { clearInterval(alarmInterval); alarmInterval = null; }
+      if (alarmOsc) {
+        try{ const gain = alarmOsc.context.createGain(); } catch(e){}
+        try { alarmOsc.stop(); } catch(e){}
+        alarmOsc.disconnect(); alarmOsc=null;
+      }
+      alarmPlaying = false;
+      try{ navigator.vibrate(0); }catch(e){};
+    }
+
+    stopAlarmBtn.addEventListener('click', ()=>{ stopAlarm(); });
+
+    // Check loop
+    setInterval(()=>{
+      const now = Date.now();
+      tasks.forEach(t=>{
+        if (!t.triggered && t.time <= now) {
+          t.triggered = true; save(); render();
+          startAlarmVisual(t);
+        }
+      });
+    }, 1000);
+
+    // Initial render
+    render();
+
+    // Register service worker (opsional)
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js').then(()=>console.log('SW registered')).catch(()=>{});
+    }
+  </script>
+</body>
+</html>
